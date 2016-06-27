@@ -48,7 +48,7 @@ import (
 // On error, it returns the error and indicates whether the call should be retried.
 //
 // TODO(zhaoq): Check whether the received message sequence is valid.
-func recvResponse(dopts dialOptions, t transport.ClientTransport, c *callInfo, stream *transport.Stream, reply interface{}) error {
+func recvResponse(codec Codec, decompressor Decompressor, t transport.ClientTransport, c *callInfo, stream *transport.Stream, reply interface{}) error {
 	// Try to acquire header metadata from the server if there is any.
 	var err error
 	c.headerMD, err = stream.Header()
@@ -57,7 +57,7 @@ func recvResponse(dopts dialOptions, t transport.ClientTransport, c *callInfo, s
 	}
 	p := &parser{r: stream}
 	for {
-		if err = recv(p, dopts.codec, stream, dopts.dc, reply); err != nil {
+		if err = recv(p, codec, stream, decompressor, reply); err != nil {
 			if err == io.EOF {
 				break
 			}
@@ -97,10 +97,15 @@ func sendRequest(ctx context.Context, codec Codec, compressor Compressor, callHd
 	return stream, nil
 }
 
-// Invoke sends the RPC request on the wire and returns after response is received.
-// Invoke is called by generated code. Also users can call Invoke directly when it
-// is really needed in their use cases.
-func Invoke(ctx context.Context, method string, args, reply interface{}, cc *ClientConn, opts ...CallOption) (err error) {
+type InvokeParams struct {
+	GetTransport func(ctx context.Context, opts BalancerGetOptions) (transport.ClientTransport, func(), error)
+	Authority    string
+	Codec        Codec
+	Compressor   Compressor
+	Decompressor Decompressor
+}
+
+func InvokeOn(ctx context.Context, method string, args, reply interface{}, params InvokeParams, opts ...CallOption) (err error) {
 	var c callInfo
 	for _, o := range opts {
 		if err := o.before(&c); err != nil {
@@ -143,16 +148,16 @@ func Invoke(ctx context.Context, method string, args, reply interface{}, cc *Cli
 		)
 		// TODO(zhaoq): Need a formal spec of fail-fast.
 		callHdr := &transport.CallHdr{
-			Host:   cc.authority,
+			Host:   params.Authority,
 			Method: method,
 		}
-		if cc.dopts.cp != nil {
-			callHdr.SendCompress = cc.dopts.cp.Type()
+		if params.Compressor != nil {
+			callHdr.SendCompress = params.Compressor.Type()
 		}
 		gopts := BalancerGetOptions{
 			BlockingWait: !c.failFast,
 		}
-		t, put, err = cc.getTransport(ctx, gopts)
+		t, put, err = params.GetTransport(ctx, gopts)
 		if err != nil {
 			// TODO(zhaoq): Probably revisit the error handling.
 			if err == ErrClientConnClosing {
@@ -172,7 +177,7 @@ func Invoke(ctx context.Context, method string, args, reply interface{}, cc *Cli
 		if c.traceInfo.tr != nil {
 			c.traceInfo.tr.LazyLog(&payload{sent: true, msg: args}, true)
 		}
-		stream, err = sendRequest(ctx, cc.dopts.codec, cc.dopts.cp, callHdr, t, args, topts)
+		stream, err = sendRequest(ctx, params.Codec, params.Compressor, callHdr, t, args, topts)
 		if err != nil {
 			if put != nil {
 				put()
@@ -187,7 +192,7 @@ func Invoke(ctx context.Context, method string, args, reply interface{}, cc *Cli
 			return toRPCErr(err)
 		}
 		// Receive the response
-		err = recvResponse(cc.dopts, t, &c, stream, reply)
+		err = recvResponse(params.Codec, params.Decompressor, t, &c, stream, reply)
 		if err != nil {
 			if put != nil {
 				put()
@@ -212,4 +217,17 @@ func Invoke(ctx context.Context, method string, args, reply interface{}, cc *Cli
 		}
 		return Errorf(stream.StatusCode(), "%s", stream.StatusDesc())
 	}
+}
+
+// Invoke sends the RPC request on the wire and returns after response is received.
+// Invoke is called by generated code. Also users can call Invoke directly when it
+// is really needed in their use cases.
+func Invoke(ctx context.Context, method string, args, reply interface{}, cc *ClientConn, opts ...CallOption) (err error) {
+	return InvokeOn(ctx, method, args, reply, InvokeParams{
+		GetTransport: cc.getTransport,
+		Authority:    cc.authority,
+		Codec:        cc.dopts.codec,
+		Compressor:   cc.dopts.cp,
+		Decompressor: cc.dopts.dc,
+	}, opts...)
 }

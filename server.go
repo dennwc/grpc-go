@@ -338,10 +338,10 @@ func (s *Server) serveNewHTTP2Transport(c net.Conn, authInfo credentials.AuthInf
 		st.Close()
 		return
 	}
-	s.serveStreams(st)
+	s.ServeStreams(st)
 }
 
-func (s *Server) serveStreams(st transport.ServerTransport) {
+func (s *Server) ServeStreams(st transport.ServerTransport) {
 	defer s.removeConn(st)
 	defer st.Close()
 	var wg sync.WaitGroup
@@ -394,7 +394,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.removeConn(st)
-	s.serveStreams(st)
+	s.ServeStreams(st)
 }
 
 // traceInfo returns a traceInfo and associates it with stream, if tracing is enabled.
