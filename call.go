@@ -97,8 +97,10 @@ func sendRequest(ctx context.Context, codec Codec, compressor Compressor, callHd
 	return stream, nil
 }
 
+type GetTransportFunc func(ctx context.Context, opts BalancerGetOptions) (transport.ClientTransport, func(), error)
+
 type InvokeParams struct {
-	GetTransport func(ctx context.Context, opts BalancerGetOptions) (transport.ClientTransport, func(), error)
+	GetTransport GetTransportFunc
 	Authority    string
 	Codec        Codec
 	Compressor   Compressor
@@ -223,11 +225,5 @@ func InvokeOn(ctx context.Context, method string, args, reply interface{}, param
 // Invoke is called by generated code. Also users can call Invoke directly when it
 // is really needed in their use cases.
 func Invoke(ctx context.Context, method string, args, reply interface{}, cc *ClientConn, opts ...CallOption) (err error) {
-	return InvokeOn(ctx, method, args, reply, InvokeParams{
-		GetTransport: cc.getTransport,
-		Authority:    cc.authority,
-		Codec:        cc.dopts.codec,
-		Compressor:   cc.dopts.cp,
-		Decompressor: cc.dopts.dc,
-	}, opts...)
+	return InvokeOn(ctx, method, args, reply, cc.InvokeParams(), opts...)
 }

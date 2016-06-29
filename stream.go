@@ -99,7 +99,7 @@ type ClientStream interface {
 
 // NewClientStream creates a new Stream for the client side. This is called
 // by generated code.
-func NewClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, opts ...CallOption) (ClientStream, error) {
+func NewClientStreamOn(ctx context.Context, desc *StreamDesc, params InvokeParams, method string, opts ...CallOption) (ClientStream, error) {
 	var (
 		t   transport.ClientTransport
 		err error
@@ -109,28 +109,25 @@ func NewClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	gopts := BalancerGetOptions{
 		BlockingWait: false,
 	}
-	t, put, err = cc.getTransport(ctx, gopts)
+	t, put, err = params.GetTransport(ctx, gopts)
 	if err != nil {
 		return nil, toRPCErr(err)
 	}
 	callHdr := &transport.CallHdr{
-		Host:   cc.authority,
+		Host:   params.Authority,
 		Method: method,
 		Flush:  desc.ServerStreams && desc.ClientStreams,
-	}
-	if cc.dopts.cp != nil {
-		callHdr.SendCompress = cc.dopts.cp.Type()
 	}
 	cs := &clientStream{
 		desc:    desc,
 		put:     put,
-		codec:   cc.dopts.codec,
-		cp:      cc.dopts.cp,
-		dc:      cc.dopts.dc,
+		codec:   params.Codec,
+		cp:      params.Compressor,
+		dc:      params.Decompressor,
 		tracing: EnableTracing,
 	}
-	if cc.dopts.cp != nil {
-		callHdr.SendCompress = cc.dopts.cp.Type()
+	if params.Compressor != nil {
+		callHdr.SendCompress = params.Compressor.Type()
 		cs.cbuf = new(bytes.Buffer)
 	}
 	if cs.tracing {
@@ -155,7 +152,7 @@ func NewClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	go func() {
 		select {
 		case <-t.Error():
-			// Incur transport error, simply exit.
+		// Incur transport error, simply exit.
 		case <-s.Context().Done():
 			err := s.Context().Err()
 			cs.finish(err)
@@ -163,6 +160,22 @@ func NewClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 		}
 	}()
 	return cs, nil
+}
+
+func (cc *ClientConn) InvokeParams() InvokeParams {
+	return InvokeParams{
+		GetTransport: cc.getTransport,
+		Authority:    cc.authority,
+		Compressor:   cc.dopts.cp,
+		Decompressor: cc.dopts.dc,
+		Codec:        cc.dopts.codec,
+	}
+}
+
+// NewClientStream creates a new Stream for the client side. This is called
+// by generated code.
+func NewClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, opts ...CallOption) (ClientStream, error) {
+	return NewClientStreamOn(ctx, desc, cc.InvokeParams(), method, opts...)
 }
 
 // clientStream implements a client side Stream.

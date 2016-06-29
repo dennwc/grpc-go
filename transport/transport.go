@@ -386,6 +386,52 @@ type CallHdr struct {
 	Flush bool
 }
 
+type UniTransport interface {
+	// Close tears down this transport. Once it returns, the transport
+	// should not be accessed any more. The caller must make sure this
+	// is called only once.
+	Close() error
+
+	// GracefulClose starts to tear down the transport. It stops accepting
+	// new RPCs and wait the completion of the pending RPCs.
+	GracefulClose() error
+
+	// Write sends the data for the given stream. A nil stream indicates
+	// the write is to be performed on the transport as a whole.
+	Write(s *Stream, data []byte, opts *Options) error
+
+	// NewStream creates a Stream for an RPC.
+	NewStream(ctx context.Context, callHdr *CallHdr) (*Stream, error)
+
+	// CloseStream clears the footprint of a stream when the stream is
+	// not needed any more. The err indicates the error incurred when
+	// CloseStream is called. Must be called when a stream is finished
+	// unless the associated transport is closing.
+	CloseStream(stream *Stream, err error)
+
+	// Error returns a channel that is closed when some I/O error
+	// happens. Typically the caller should have a goroutine to monitor
+	// this in order to take action (e.g., close the current transport
+	// and create a new one) in error case. It should not return nil
+	// once the transport is initiated.
+	Error() <-chan struct{}
+
+	// HandleStreams receives incoming streams using the given handler.
+	HandleStreams(func(*Stream))
+
+	// WriteHeader sends the header metadata for the given stream.
+	// WriteHeader may not be called on all streams.
+	WriteHeader(s *Stream, md metadata.MD) error
+
+	// WriteStatus sends the status of a stream to the client.
+	// WriteStatus is the final call made on a stream and always
+	// occurs.
+	WriteStatus(s *Stream, statusCode codes.Code, statusDesc string) error
+
+	// RemoteAddr returns the remote network address.
+	RemoteAddr() net.Addr
+}
+
 // ClientTransport is the common interface for all gRPC client-side transport
 // implementations.
 type ClientTransport interface {

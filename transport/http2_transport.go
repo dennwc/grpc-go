@@ -101,7 +101,7 @@ type TransportOptions struct {
 //
 // Setting HandleStreams on options acts as a call to HandleStreams with the same
 // parameter on transport.
-func newHTTP2Transport(conn net.Conn, isClient bool, opts *TransportOptions) (_ *http2Transport, err error) {
+func NewHTTP2Transport(conn net.Conn, isClient bool, opts *TransportOptions) (_ UniTransport, err error) {
 	if isClient {
 		// Send connection preface to server.
 		n, err := conn.Write(clientPreface)
@@ -190,7 +190,7 @@ func newHTTP2Transport(conn net.Conn, isClient bool, opts *TransportOptions) (_ 
 	// Start the reader goroutine for incoming message. Each transport has
 	// a dedicated goroutine which reads HTTP2 frame from network. Then it
 	// dispatches the frame to the corresponding stream entity.
-	if isClient || opts.HandleStreams != nil {
+	if opts.HandleStreams != nil {
 		go t.reader(opts.HandleStreams)
 	}
 	go t.controller()
@@ -201,7 +201,7 @@ func newHTTP2Transport(conn net.Conn, isClient bool, opts *TransportOptions) (_ 
 // newHTTP2Server constructs a ServerTransport based on HTTP2. ConnectionError is
 // returned if something goes wrong.
 func newHTTP2Server(conn net.Conn, maxStreams uint32, authInfo credentials.AuthInfo) (_ ServerTransport, err error) {
-	return newHTTP2Transport(conn, false, &TransportOptions{
+	return NewHTTP2Transport(conn, false, &TransportOptions{
 		MaxStreams: maxStreams,
 		AuthInfo:   authInfo,
 	})
@@ -210,7 +210,7 @@ func newHTTP2Server(conn net.Conn, maxStreams uint32, authInfo credentials.AuthI
 // newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
 // and starts to receive messages on it. Non-nil error returns if construction
 // fails.
-func newHTTP2Client(addr string, opts *ConnectOptions) (_ ClientTransport, err error) {
+func newHTTP2Client(addr string, opts *ConnectOptions) (ClientTransport, error) {
 	if opts.Dialer == nil {
 		// Set the default Dialer.
 		opts.Dialer = func(addr string, timeout time.Duration) (net.Conn, error) {
@@ -220,9 +220,9 @@ func newHTTP2Client(addr string, opts *ConnectOptions) (_ ClientTransport, err e
 	scheme := "http"
 	startT := time.Now()
 	timeout := opts.Timeout
-	conn, connErr := opts.Dialer(addr, timeout)
-	if connErr != nil {
-		return nil, ConnectionErrorf("transport: %v", connErr)
+	conn, err := opts.Dialer(addr, timeout)
+	if err != nil {
+		return nil, ConnectionErrorf("transport: %v", err)
 	}
 	var authInfo credentials.AuthInfo
 	if opts.TransportCredentials != nil {
@@ -230,23 +230,24 @@ func newHTTP2Client(addr string, opts *ConnectOptions) (_ ClientTransport, err e
 		if timeout > 0 {
 			timeout -= time.Since(startT)
 		}
-		conn, authInfo, connErr = opts.TransportCredentials.ClientHandshake(addr, conn, timeout)
+		conn, authInfo, err = opts.TransportCredentials.ClientHandshake(addr, conn, timeout)
 	}
-	if connErr != nil {
-		return nil, ConnectionErrorf("transport: %v", connErr)
+	if err != nil {
+		return nil, ConnectionErrorf("transport: %v", err)
 	}
-	defer func() {
-		if err != nil {
-			conn.Close()
-		}
-	}()
-	return newHTTP2Transport(conn, true, &TransportOptions{
+	tr, err := NewHTTP2Transport(conn, true, &TransportOptions{
 		UserAgent:         opts.UserAgent,
 		PerRPCCredentials: opts.PerRPCCredentials,
 		AuthInfo:          authInfo,
 		Scheme:            scheme,
 		PeerAddr:          addr,
 	})
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	go tr.HandleStreams(nil)
+	return tr, nil
 }
 
 func (t *http2Transport) getStream(f http2.Frame) (*Stream, bool) {
@@ -1259,7 +1260,9 @@ func (t *http2Transport) notifyError(err error) {
 			grpclog.Printf("transport: http2Client.notifyError got notified that the client transport was broken %v.", err)
 		}
 	} else {
-		grpclog.Printf("transport: http2Server: transport was broken: %v", err)
+		if err != io.EOF {
+			grpclog.Printf("transport: http2Server: transport was broken: %v", err)
+		}
 		t.Close()
 	}
 }
